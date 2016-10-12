@@ -1,0 +1,4 @@
+[2016-09-13 18:20:57,831] [ERROR] [__main__-12580.log] [device_center_client.py:_connect:585]  [connect failed]
+[2016-09-13 18:21:09,450] [ERROR] [__main__-12580.log] [device_center_client.py:_connect:585]  [connect failed]
+[2016-09-13 18:21:21,069] [ERROR] [__main__-12580.log] [device_center_client.py:_connect:585]  [connect failed]
+[2016-09-13 18:21:32,687] [ERROR] [__main__-12580.log] [device_center_client.py:_connect:585]  [connect failed]

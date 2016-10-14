@@ -7,6 +7,7 @@ import Vistek.Data as v_data
 import logging, objgraph
 import eventlet, gc
 import MySQLdb, socket
+import collections
 try:
     import xml.etree.cElementTree as ET
 except:
@@ -132,13 +133,17 @@ class DispatchClient():
         self._connect()
         if db_config_file is not None:
             db_config_content = self.__parse_db_file_config(db_config_file)
+            db_para = self.parse_db_config_file(db_config_file)
             if db_config_content is not None and isinstance(db_config_content, tuple):
                 if db_config_content[0] == 'mysql':
-                    self._db_helper = MySqlDbHelper(*db_config_content[1:])
-                    self._get_service_status_info_thrd = threading.Thread(target=DispatchClient._doGetServiceStatusInfo, args=(self,))
+                    #self._db_helper = MySqlDbHelper(*db_config_content[1:])
+                    self._db_storage=MysqlDB_init(db_para)
+                    #self._get_service_status_info_thrd = threading.Thread(target=DispatchClient._doGetServiceStatusInfo, args=(self,))
+                    self._pushStreamUriToMysql_thrd=threading.Thread(target=DispatchClient._doPushStreamUriToMysql,args=(self,))
                 elif db_config_content[0] == 'sqlite':
                     self._db_helper = DBHelper.SQLLiteHelper(*db_config_content[1:])
                     self._get_service_status_info_thrd = threading.Thread(target=DispatchClient._doGetServiceStatusInfoIntoSqlite, args=(self,))
+                    self._pushStreamUriToMysql_thrd=threading.Thread(target=DispatchClient._doPushStreamUriToMysql,args=(self,))
         self._get_device_lists_thrd = threading.Thread(target=DispatchClient._do_main_loop, name="get_device_lists", args=(self,))
         # self._register_thrd = threading.Thread(target=DispatchClient._do_register_device, name="register device", args=(self,))
         self._register_thrd = threading.Thread(target=DispatchClient._do_register_device_bythreadpool, name="register device", args=(self,))
@@ -150,6 +155,7 @@ class DispatchClient():
         self._device_stream_uri_map = dict()
         self._failed_url_device=set()#ghl 添加 记录获取流地址失败的设备
         self.StreamUriQueue = Queue.Queue()  ##获取流地址线程回调函数，处理返回流地址，并且压入，v_device.DeviceStreamInfo()
+        self.StreamUriQueueDB = Queue.Queue()  #单独一个线程用来 将流地址插入到数据库中，获取流地址线程回调函数，处理返回流地址，并且压入，v_device.DeviceStreamInfo()
         self.WholeDevListQueue = Queue.Queue()  # 每次从获取设备列表的session中设备放入到此全局队列中
 
         self._get_stream_uri_interval = 60
@@ -180,6 +186,26 @@ class DispatchClient():
                         raise "db config file error!!!"
         return None
 
+    def parse_db_config_file(self,db_file):
+        if db_file is None or not os.path.exists(db_file):
+            raise Exception, "Error:mysql config file is None or db_file is not exists"
+        db = collections.namedtuple("parameters", "type host port user passwd db table")
+        db_tree = ET.ElementTree()
+        db_tree.parse(db_file)
+        root_node = db_tree.getroot()
+        if root_node is not None:
+            db_type = root_node.get("dbtype")
+            if db_type == "mysql":
+                db_para = db(type=root_node.get("type")
+                             , host=root_node.get("host")
+                             , port=root_node.get("port")
+                             , passwd=root_node.get("passwd")
+                             , user=root_node.get("user")
+                             , db=root_node.get("db")
+                             , table=root_node.get("table"))
+                return db_para
+        else:
+            raise Exception, "db config file error"
     def start(self):
         if self._get_device_lists_thrd:
             self._get_device_lists_thrd.start()
@@ -193,6 +219,8 @@ class DispatchClient():
             self._push_stream_uri_thrd.start()
         if hasattr(self, "_get_service_status_info_thrd") and self._get_service_status_info_thrd:
             self._get_service_status_info_thrd.start()
+        if self._pushStreamUriToMysql_thrd:
+            self._pushStreamUriToMysql_thrd.start()
 
     def stop(self):
         if self._get_device_lists_thrd:
@@ -352,7 +380,7 @@ class DispatchClient():
                     while self._center_session.PushDeviceStatus(dev_status):
                         time.sleep(2)
                     logger.info("client {0} Push status end".format(self._manuc))
-                    push_status_info_to_db(service_id, self._db_helper, dev_status)
+                    #push_status_info_to_db(service_id, self._db_helper, dev_status)
                 else:
                     logger.warn("client {0} status error status:{1}".format(self._manuc, status))
             #objgraph.show_growth()
@@ -574,6 +602,7 @@ class DispatchClient():
                     if(stream_uri.deviceID in self._failed_url_device):
                         self._failed_url_device.remove(stream_uri.deviceID)
                 self.StreamUriQueue.put(stream_urls)
+                self.StreamUriQueueDB.put(stream_urls)
             except:
                 traceback.print_exc()
         else:
@@ -759,7 +788,7 @@ class DispatchClient():
                             sqlhelper.add(stream_info)
                     except:
                         traceback.print_exc()
-                insert_push_info(service_id, self._db_helper, need_to_push_stream_url)
+                #insert_push_info(service_id, self._db_helper, need_to_push_stream_url)
                 stream_urls.update(need_to_push_stream_url)
                 logger.info("client {0} Push Stream URI Begin".format(self._manuc))
                 #self._proxy.PushDeviceStreamInfos(stream_uri_map)
@@ -834,6 +863,29 @@ class DispatchClient():
                     else:
                         self._db_helper.add(server_device_info_table)
             time.sleep(60)
+
+    def _doPushStreamUriToMysql(self):
+        while True:
+            urlStructList=[]
+            try:
+                urls=self.StreamUriQueueDB.get(timeout=1)
+                for url_id,url in urls.items():
+                    urlStruct=DBTypes.UrlTableData()
+                    url_id_list=url_id.split(":")
+                    urlStruct.deviceID=url_id_list[0]
+                    urlStruct.channel=url_id_list[1]
+                    urlStruct.streamType=url_id_list[2]
+                    urlStruct.url=url.uri
+                    urlStruct.protocol=self._manuc
+                    urlStructList.append(urlStruct)
+                logger.info("length of urlStructList:{0}".format(len(urlStructList)))
+                self._db_storage.putStreamUriToTable(urlStructList)
+            except Queue.Empty:
+                continue
+
+
+
+
 
     def _doGetServiceStatusInfo(self):
         while 1:
@@ -917,8 +969,113 @@ class MySqlDbHelper():
                 result_rows.extend([row for row in self._exe_handle.fetchall()])
             return (count, result_rows)
         return None
+
+
+# def parse_db_config_file(db_file):
+#     if db_file is None or not os.path.exists(db_file):
+#         raise Exception, "Error:mysql config file is None or db_file is not exists"
+#     db = collections.namedtuple("parameters", "type host port user passwd db table")
+#     db_tree = ET.ElementTree()
+#     db_tree.parse(db_file)
+#     root_node = db_tree.getroot()
+#     if root_node is not None:
+#         db_type = root_node.get("dbtype")
+#         if db_type == "mysql":
+#             db_para = db(type=root_node.get("type")
+#                          , host=root_node.get("host")
+#                          , port=root_node.get("port")
+#                          , passwd=root_node.get("passwd")
+#                          , user=root_node.get("user")
+#                          , db=root_node.get("db")
+#                          , table=root_node.get("table"))
+#             return db_para
+#     else:
+#         raise Exception, "db config file error"
+class MysqlDB_init():
+    def __init__(self,db_para):
+        self.db_para=db_para
+        self.conn=None
+        self.cursor=None
+        self.DB_init()
+    def DB_init(self):
+        self.conn = self.Newconnection()
+        if self.conn is None:
+            raise Exception,"ERROR:connecting mysql occur error"
+        self.setAutocommit(True)
+        self.cursor=self.getCursor()
+        self.createDatabase()
+        self.setDatabase()
+        self.createTable()
+        self.createStorageProcess()
+
+    def Newconnection(self):
+        try:
+            conn=MySQLdb.connect(host=self.db_para.host,port=int(self.db_para.port),user=self.db_para.user,passwd=self.db_para.passwd)
+            return conn
+        except Exception,ex:
+            traceback.print_exc()
+            return None
+    def closeConnection(self):
+        if self.conn is not None:
+            self.conn.close()
+    def getCursor(self):
+        return self.conn.cursor()
+    def setAutocommit(self,type):
+        if self.conn is not None:
+            self.conn.autocommit(on=type)
+    def setDatabase(self):
+        sqltext="use %s" % self.db_para.db
+        self.execute(sqltext)
+    def createDatabase(self):
+        seltext="create database if not exists %s" % self.db_para.db
+        self.execute(seltext)
+    def createTable(self):
+        sqltext="create table if not exists %s(protocol VARCHAR(10)" \
+                ",deviceID VARCHAR(100)" \
+                ",channel VARCHAR(10)" \
+                ",streamType VARCHAR(10)" \
+                ",url VARCHAR(200)" \
+                ",createDate datetime" \
+                ",updateDate datetime)" % self.db_para.table
+        self.execute(sqltext)
+    def execute(self,sqltext):
+        if self.cursor is not None:
+            try:
+                line=self.cursor.execute(sqltext)
+            except Exception,ex:
+                traceback.print_exc()
+                return None
+        return line
+    def createStorageProcess(self):
+        sql="show procedure status like 'demo_proc'"
+        rows=self.execute(sql)
+        if rows ==0:
+            sql = "CREATE PROCEDURE demo_proc(IN protocol_in VARCHAR(10) ,IN deviceID_in VARCHAR(100) ,IN channel_in VARCHAR(10) ,IN streamType_in VARCHAR(10) ,IN url_in VARCHAR(200)) \
+            BEGIN \
+                DECLARE n int DEFAULT 0;\
+                SELECT COUNT(*) INTO n FROM streamurl WHERE protocol=protocol_in AND deviceID=deviceID_in AND channel=channel_in AND streamType=streamType_in;\
+                if n=0 THEN \
+                INSERT INTO streamurl(protocol,deviceID,channel,streamType,url,createDate,updateDate) VALUES (protocol_in,deviceID_in,channel_in,streamType_in,url_in,now(),now());\
+                ELSE \
+                UPDATE streamurl set url=url_in,updateDate=now() WHERE protocol=protocol_in AND deviceID=deviceID_in AND channel=channel_in AND streamType=streamType_in; \
+                END if; \
+                END;"
+            self.execute(sql)
+
+    def putStreamUriToTable(self,urlStructList):
+        for uri in urlStructList:
+            logger.info("uri:{0}".format(uri.streamType))
+            result=self.cursor.callproc("demo_proc",(uri.protocol,uri.deviceID,uri.channel,uri.streamType,uri.url))
+            self.conn.commit()
+            logger.info("resutl:({0}".format(result))
+
+
+
+
 if __name__ == "__main__":
-    center_client = DispatchClient("device_dispatch_service:tcp -h localhost -p 54321")
-    center_client.start()
+    # center_client = DispatchClient("device_dispatch_service:tcp -h localhost -p 54321")
+    # center_client.start()
+    db_para=parse_db_config_file("C:\\Users\\Administrator\\Desktop\\start_script\\db_config.xml")
+    instance=MysqlDB_init(db_para)
     raw_input()
 

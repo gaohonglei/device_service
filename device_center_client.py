@@ -11,7 +11,7 @@ import multiprocessing
 import gc
 import objgraph
 
-eventlet.monkey_patch(socket=True)
+#eventlet.monkey_patch(socket=True)
 try:
     import Queue
 except:

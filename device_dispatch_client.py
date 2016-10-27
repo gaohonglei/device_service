@@ -8,6 +8,7 @@ import logging, objgraph
 import eventlet, gc
 import MySQLdb, socket
 import collections
+v_device.
 try:
     import xml.etree.cElementTree as ET
 except:
@@ -580,29 +581,38 @@ class DispatchClient():
         if result is not None and isinstance(result, tuple) and 0 < len(result[0]):
             try:
                 urls_node = ET.fromstring(result[0])
-                stream_urls = {}
+                channel_urls_dict={}
                 for stream_url_node in urls_node.iter("stream_url"):
-                    stream_uri = v_device.DeviceStreamInfo()
+                    stream=v_device.DeviceStreamInfo
                     stream_url_id = stream_url_node.get("id")
                     id_list = str(stream_url_id).split(":")
-                    stream_uri.deviceID = str(id_list[0])
-                    stream_uri.uri = str(stream_url_node.text)
-                    stream_url_user = stream_url_node.get("user_name")
-                    stream_url_pwd = stream_url_node.get("password")
-                    stream_url_third = stream_url_node.get("third_party")
-                    stream_uri.username = str(stream_url_user)
-                    stream_uri.password = str(stream_url_pwd)
-                    stream_uri.channel = int(id_list[1])
-                    stream_uri.stream = int(id_list[2])
-                    if str(stream_url_third) == str(True):
-                        stream_uri.thirdparty = True
-                    else:
-                        stream_uri.thirdparty = False
-                    stream_urls.update({stream_url_id: stream_uri})
-                    if(stream_uri.deviceID in self._failed_url_device):
+                    deviceID = str(id_list[0])
+                    channel = str(id_list[1])
+                    channel_key=deviceID+"_"+channel
+                    if not channel_urls_dict.has_key(channel_key):
+                        channel_urls=v_device.DeviceChannelInfo()
+                        channel_urls_dict.setdefault(channel_key,channel_urls)
+                        channel_urls.deviceID=cstr(id_list[0])
+                        channel_url_user = stream_url_node.get("user_name")
+                        channel_url_pwd = stream_url_node.get("password")
+                        channel_urs.username = str(channel_url_user)
+                        channel_urls.password = str(channel_url_pwd)
+                        channel_url_third = stream_url_node.get("third_party")
+                        if str(channel_url_third) == str(True):
+                            channel_urls.thirdparty = True
+                        else:
+                            channel_uris.thirdparty = False
+                    stream.channel=int(id_list[1])
+                    stream.stream = int(id_list[2])
+                    stream.deviceID=str(id_list[0])
+                    stream.uri = str(stream_url_node.text)
+                    if not channel_urls_dict[channel_key].streamList:
+                        channel_urls_dict[channel_key].streamList=[]
+                    channel_urls_dict[channel_key].streamList.append(stream)
+                    if(deviceID in self._failed_url_device):
                         self._failed_url_device.remove(stream_uri.deviceID)
-                self.StreamUriQueue.put(stream_urls)
-                self.StreamUriQueueDB.put(stream_urls)
+                self.StreamUriQueue.put(channel_urls_dict)
+                #self.StreamUriQueueDB.put(stream_urls)
             except:
                 traceback.print_exc()
         else:
@@ -761,7 +771,7 @@ class DispatchClient():
         etree = ET.ElementTree()
         while self._push_stream_uri_thrd and self._push_stream_uri_thrd.is_alive():
             stream_uri_map = self.StreamUriQueue.get()
-            need_to_push_stream_url = {key:item for key, item in stream_uri_map.items() if key not in stream_urls}
+            need_to_push_stream_url = [item for key, item in stream_uri_map.items() if key not in stream_urls]
             stream_urls_node.set("count", str(len(need_to_push_stream_url)))
             if 0 < len(need_to_push_stream_url):
                 # for key, value in need_to_push_stream_url.items():
@@ -789,7 +799,7 @@ class DispatchClient():
                     except:
                         traceback.print_exc()
                 #insert_push_info(service_id, self._db_helper, need_to_push_stream_url)
-                stream_urls.update(need_to_push_stream_url)
+                stream_urls.update({item for key, item in stream_uri_map.items() if key not in stream_urls})
                 logger.info("client {0} Push Stream URI Begin".format(self._manuc))
                 #self._proxy.PushDeviceStreamInfos(stream_uri_map)
                 # self._proxy.PushDeviceStreamInfos(stream_uri_map)
